@@ -1,0 +1,73 @@
+name: Build desktop apps
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libayatana-appindicator3-dev
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build linux --release
+      - name: Package Linux x64
+        run: tar -C build/linux/x64/release -czf flutter-launchpad-host-linux-x64.tar.gz bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter-launchpad-host-linux-x64
+          path: flutter-launchpad-host-linux-x64.tar.gz
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build windows --release
+      - name: Package Windows x64
+        shell: pwsh
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath flutter-launchpad-host-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter-launchpad-host-windows-x64
+          path: flutter-launchpad-host-windows-x64.zip
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build macos --release
+      - name: Package macOS app
+        run: ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/flutter_launchpad_host.app flutter-launchpad-host-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter-launchpad-host-macos
+          path: flutter-launchpad-host-macos.zip

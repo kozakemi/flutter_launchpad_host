@@ -1,0 +1,26 @@
+name: flutter_launchpad_host
+description: "Flutter desktop companion for the embedded Launchpad."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.7.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  file_picker: ^10.3.3
+  flutter_svg: ^2.0.17
+  tray_manager: ^0.5.3
+  window_manager: ^0.5.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/tray_icon.png
+    - assets/tray_icon.ico
