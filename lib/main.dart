@@ -532,7 +532,7 @@ class _AddedActions extends StatelessWidget {
                     padding: const EdgeInsets.all(16),
                     buildDefaultDragHandles: false,
                     itemCount: controller.actions.length,
-                    onReorder: controller.reorderAction,
+                    onReorderItem: controller.reorderAction,
                     itemBuilder: (context, index) {
                       final action = controller.actions[index];
                       return Card(
@@ -771,7 +771,7 @@ class _ActionEditorState extends State<_ActionEditor> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<ExecutionPrivilege>(
-                value: _privilege,
+                initialValue: _privilege,
                 decoration: const InputDecoration(labelText: '执行权限'),
                 items: const [
                   DropdownMenuItem(
