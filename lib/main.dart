@@ -198,7 +198,6 @@ class _HostPageState extends State<HostPage> with WindowListener, TrayListener {
   Future<void> _connectionDialog() async {
     final host = TextEditingController(text: _controller.host);
     final token = TextEditingController(text: _controller.token);
-    final clientId = TextEditingController(text: _controller.clientId);
     final clientName = TextEditingController(text: _controller.clientName);
     final saved = await showDialog<bool>(
       context: context,
@@ -223,12 +222,12 @@ class _HostPageState extends State<HostPage> with WindowListener, TrayListener {
                     textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(labelText: '4 字符令牌'),
                   ),
-                  TextField(
-                    controller: clientId,
+                  InputDecorator(
                     decoration: const InputDecoration(
-                      labelText: '客户端 ID',
-                      helperText: '只允许字母、数字、下划线和连字符',
+                      labelText: '设备 ID（自动生成）',
+                      helperText: '来自系统稳定设备标识，用于区分不同电脑',
                     ),
+                    child: SelectableText(_controller.clientId),
                   ),
                   TextField(
                     controller: clientName,
@@ -253,13 +252,11 @@ class _HostPageState extends State<HostPage> with WindowListener, TrayListener {
       await _controller.updateConnection(
         host: host.text,
         token: token.text,
-        clientId: clientId.text,
         clientName: clientName.text,
       );
     }
     host.dispose();
     token.dispose();
-    clientId.dispose();
     clientName.dispose();
   }
 

@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models.dart';
@@ -40,6 +42,8 @@ class HostController extends ChangeNotifier {
 
   Future<void> initialize() async {
     await _loadConfiguration();
+    _clientId = await _resolveStableClientId(_clientId);
+    await _saveConfiguration();
     await scanApplications();
     if (_host.isNotEmpty && _token.length == 4) {
       unawaited(connect());
@@ -65,12 +69,10 @@ class HostController extends ChangeNotifier {
   Future<void> updateConnection({
     required String host,
     required String token,
-    required String clientId,
     required String clientName,
   }) async {
     _host = host.trim();
     _token = token.trim().toUpperCase();
-    _clientId = _safeId(clientId);
     _clientName = clientName.trim();
     await _saveConfiguration();
     notifyListeners();
@@ -371,6 +373,68 @@ class HostController extends ChangeNotifier {
     final configHome =
         Platform.environment['XDG_CONFIG_HOME'] ?? '$home/.config';
     return Directory('$configHome/flutter-launchpad-host');
+  }
+
+  Future<String> _resolveStableClientId(String savedId) async {
+    final safeSavedId = _safeId(savedId);
+    if (safeSavedId.isNotEmpty && safeSavedId != 'flutter-desktop') {
+      return safeSavedId;
+    }
+    final systemId = await _readSystemDeviceId();
+    final source =
+        systemId ??
+        base64UrlEncode(
+          List<int>.generate(24, (_) => Random.secure().nextInt(256)),
+        );
+    final digest = sha256.convert(utf8.encode(source)).toString();
+    return 'host-${digest.substring(0, 12)}';
+  }
+
+  Future<String?> _readSystemDeviceId() async {
+    try {
+      if (Platform.isWindows) {
+        final result = await Process.run('reg.exe', const [
+          'query',
+          r'HKLM\SOFTWARE\Microsoft\Cryptography',
+          '/v',
+          'MachineGuid',
+        ]);
+        if (result.exitCode != 0) return null;
+        final match = RegExp(
+          r'MachineGuid\s+REG_SZ\s+(.+)',
+          caseSensitive: false,
+        ).firstMatch('${result.stdout}');
+        return _nonEmpty(match?.group(1));
+      }
+      if (Platform.isMacOS) {
+        final result = await Process.run('/usr/sbin/ioreg', const [
+          '-rd1',
+          '-c',
+          'IOPlatformExpertDevice',
+        ]);
+        if (result.exitCode != 0) return null;
+        final match = RegExp(
+          r'"IOPlatformUUID"\s*=\s*"([^"]+)"',
+        ).firstMatch('${result.stdout}');
+        return _nonEmpty(match?.group(1));
+      }
+      for (final path in const [
+        '/etc/machine-id',
+        '/var/lib/dbus/machine-id',
+      ]) {
+        final file = File(path);
+        if (await file.exists()) {
+          final value = _nonEmpty(await file.readAsString());
+          if (value != null) return value;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  String? _nonEmpty(String? value) {
+    final trimmed = value?.trim() ?? '';
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   Future<void> _loadConfiguration() async {
