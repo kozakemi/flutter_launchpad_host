@@ -17,6 +17,11 @@ class HostController extends ChangeNotifier {
   final List<LaunchpadAction> _actions = [];
   WebSocket? _socket;
   Timer? _reconnectTimer;
+  Timer? _mediaTimer;
+  bool _pollingMedia = false;
+  String _lastArtworkUrl = '';
+  String _lastArtworkBase64 = '';
+  String _lastSentArtworkUrl = '';
   bool _manualDisconnect = true;
   bool _scanning = false;
   String _host = '';
@@ -103,6 +108,7 @@ class HostController extends ChangeNotifier {
         cancelOnError: true,
       );
       await _registerActions();
+      _startMediaUpdates();
       notifyListeners();
     } catch (error) {
       _connectionState = HostConnectionState.disconnected;
@@ -122,6 +128,8 @@ class HostController extends ChangeNotifier {
     _manualDisconnect = true;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _mediaTimer?.cancel();
+    _mediaTimer = null;
     final socket = _socket;
     _socket = null;
     _connectionState = HostConnectionState.disconnected;
@@ -133,6 +141,8 @@ class HostController extends ChangeNotifier {
   void _disconnected(WebSocket socket) {
     if (_socket != socket) return;
     _socket = null;
+    _mediaTimer?.cancel();
+    _mediaTimer = null;
     _connectionState = HostConnectionState.disconnected;
     _message = '与开发板的连接已断开';
     notifyListeners();
@@ -151,6 +161,12 @@ class HostController extends ChangeNotifier {
     final socket = _socket;
     if (socket == null) return;
     final registrations = <Map<String, Object>>[];
+    registrations.add({
+      'id': '__media__',
+      'name': '媒体控制',
+      'order': -1,
+      'kind': 'media',
+    });
     for (var index = 0; index < _actions.length; index++) {
       final action = _actions[index];
       if (!action.enabled) continue;
@@ -194,10 +210,130 @@ class HostController extends ChangeNotifier {
       } else if (message['type'] == 'registered') {
         _message = '已向开发板注册 ${message['actionCount']} 个按钮';
         notifyListeners();
+      } else if (message['type'] == 'mediaCommand') {
+        unawaited(_executeMediaCommand('${message['command'] ?? ''}'));
       } else if (message['type'] == 'error') {
         _message = '${message['message']}';
         notifyListeners();
       }
+    } catch (_) {}
+  }
+
+  void _startMediaUpdates() {
+    _mediaTimer?.cancel();
+    _lastSentArtworkUrl = '';
+    unawaited(_pollMedia());
+    _mediaTimer = Timer.periodic(
+      const Duration(milliseconds: 1500),
+      (_) => unawaited(_pollMedia()),
+    );
+  }
+
+  Future<void> _pollMedia() async {
+    if (_pollingMedia || !isConnected) return;
+    _pollingMedia = true;
+    try {
+      if (!Platform.isLinux) {
+        _sendMediaState({'available': false, 'message': '当前版本暂未接入此系统的媒体会话'});
+        return;
+      }
+      final result = await Process.run('playerctl', const [
+        'metadata',
+        '--format',
+        '{{status}}\u001f{{xesam:title}}\u001f{{xesam:artist}}\u001f'
+            '{{xesam:album}}\u001f{{mpris:artUrl}}\u001f{{xesam:asText}}',
+      ]);
+      if (result.exitCode != 0) {
+        _sendMediaState({'available': false, 'message': '未检测到正在运行的 MPRIS 播放器'});
+        return;
+      }
+      final fields = '${result.stdout}'.trim().split('\u001f');
+      while (fields.length < 6) {
+        fields.add('');
+      }
+      final artworkUrl = fields[4].trim();
+      if (artworkUrl != _lastArtworkUrl) {
+        _lastArtworkUrl = artworkUrl;
+        _lastArtworkBase64 = await _readArtwork(artworkUrl);
+      }
+      final state = <String, Object>{
+        'available': true,
+        'playing': fields[0].trim().toLowerCase() == 'playing',
+        'title': fields[1].trim(),
+        'artist': fields[2].trim(),
+        'album': fields[3].trim(),
+        'lyrics': fields[5].trim().substring(
+          0,
+          fields[5].trim().length.clamp(0, 8000),
+        ),
+      };
+      if (_lastSentArtworkUrl != artworkUrl) {
+        state['artworkBase64'] = _lastArtworkBase64;
+        _lastSentArtworkUrl = artworkUrl;
+      }
+      _sendMediaState(state);
+    } on ProcessException {
+      _sendMediaState({
+        'available': false,
+        'message': '未安装 playerctl，请安装后重新打开播放器',
+      });
+    } catch (error) {
+      _sendMediaState({'available': false, 'message': '读取媒体信息失败：$error'});
+    } finally {
+      _pollingMedia = false;
+    }
+  }
+
+  void _sendMediaState(Map<String, Object> state) {
+    _socket?.add(jsonEncode({'type': 'mediaState', 'state': state}));
+  }
+
+  Future<String> _readArtwork(String value) async {
+    if (value.isEmpty) return '';
+    try {
+      final uri = Uri.parse(value);
+      final bytes =
+          uri.scheme == 'file'
+              ? await File.fromUri(uri).readAsBytes()
+              : await _downloadArtwork(uri);
+      if (bytes.length > 1024 * 1024) return '';
+      return base64Encode(bytes);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<List<int>> _downloadArtwork(Uri uri) async {
+    if (uri.scheme != 'http' && uri.scheme != 'https') return const [];
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+    try {
+      final response = await (await client.getUrl(uri)).close();
+      if (response.statusCode != HttpStatus.ok) return const [];
+      final bytes = <int>[];
+      await for (final chunk in response) {
+        bytes.addAll(chunk);
+        if (bytes.length > 1024 * 1024) return const [];
+      }
+      return bytes;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _executeMediaCommand(String command) async {
+    if (!Platform.isLinux) return;
+    final arguments = switch (command) {
+      'previous' => const ['previous'],
+      'playPause' => const ['play-pause'],
+      'next' => const ['next'],
+      'volumeDown' => const ['volume', '0.05-'],
+      'volumeUp' => const ['volume', '0.05+'],
+      _ => const <String>[],
+    };
+    if (arguments.isEmpty) return;
+    try {
+      await Process.run('playerctl', arguments);
+      await _pollMedia();
     } catch (_) {}
   }
 
