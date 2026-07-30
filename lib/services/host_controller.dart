@@ -348,6 +348,7 @@ class HostController extends ChangeNotifier {
 
   Future<void> reorderAction(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
+    if (newIndex > oldIndex) newIndex--;
     final action = _actions.removeAt(oldIndex);
     _actions.insert(newIndex, action);
     await _actionsChanged();
