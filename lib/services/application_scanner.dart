@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
+
 import '../models.dart';
 
 class ApplicationScanner {
@@ -61,6 +64,10 @@ class ApplicationScanner {
     return result;
   }
 
+  static const MethodChannel _macIconChannel = MethodChannel(
+    'flutter_launchpad_host/macos_icons',
+  );
+
   Future<List<DesktopApplication>> _scanMacOS() async {
     final applications = <String, DesktopApplication>{};
     final home = Platform.environment['HOME'] ?? '';
@@ -69,31 +76,67 @@ class ApplicationScanner {
       Directory('/System/Applications'),
       if (home.isNotEmpty) Directory('$home/Applications'),
     ];
+    final bundles = <Directory>[];
     for (final root in roots) {
       if (!await root.exists()) continue;
       try {
         await for (final entity in root.list()) {
-          if (entity is! Directory || !entity.path.endsWith('.app')) continue;
-          final bundleName =
-              entity.uri.pathSegments.where((part) => part.isNotEmpty).last;
-          final name = bundleName.substring(0, bundleName.length - 4);
-          final id = _safeId(entity.path);
-          applications[id] = DesktopApplication(
-            id: id,
-            name: name,
-            executable: '/usr/bin/open',
-            defaultArguments: ['-a', entity.path],
-            iconPath: '',
-            desktopFile: entity.path,
-          );
+          if (entity is Directory && entity.path.endsWith('.app')) {
+            bundles.add(entity);
+          }
         }
       } catch (_) {}
+    }
+    final iconDirectory = await _macIconDirectory();
+    for (final bundle in bundles) {
+      final bundleName =
+          bundle.uri.pathSegments.where((part) => part.isNotEmpty).last;
+      final name = bundleName.substring(0, bundleName.length - 4);
+      final id = _safeId(bundle.path);
+      applications[id] = DesktopApplication(
+        id: id,
+        name: name,
+        executable: '/usr/bin/open',
+        defaultArguments: ['-a', bundle.path],
+        iconPath: await _macIconPath(bundle, iconDirectory),
+        desktopFile: bundle.path,
+      );
     }
     final result =
         applications.values.toList()..sort(
           (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
         );
     return result;
+  }
+
+  Future<Directory> _macIconDirectory() async {
+    final home = Platform.environment['HOME'] ?? Directory.systemTemp.path;
+    final directory = Directory(
+      '$home/Library/Caches/flutter-launchpad-host/icons',
+    );
+    await directory.create(recursive: true);
+    return directory;
+  }
+
+  Future<String> _macIconPath(Directory bundle, Directory iconDirectory) async {
+    try {
+      final digest = sha1.convert(utf8.encode(bundle.path)).toString();
+      final cached = File('${iconDirectory.path}/$digest.png');
+      if (await cached.exists()) {
+        final bundleModified = (await bundle.stat()).modified;
+        final cachedModified = (await cached.stat()).modified;
+        if (!bundleModified.isAfter(cachedModified)) return cached.path;
+      }
+      final bytes = await _macIconChannel.invokeMethod<Uint8List>(
+        'getApplicationIcon',
+        <String, String>{'path': bundle.path},
+      );
+      if (bytes == null || bytes.isEmpty) return '';
+      await cached.writeAsBytes(bytes, flush: true);
+      return cached.path;
+    } catch (_) {
+      return '';
+    }
   }
 
   List<Directory> _applicationDirectories() {
